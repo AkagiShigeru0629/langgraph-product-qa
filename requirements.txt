@@ -1,0 +1,28 @@
+# Core
+Python>=3.10
+
+# LangGraph & LangChain
+langchain-core>=0.3
+langchain-huggingface
+langchain-chroma
+langgraph
+
+# Vector DB & Retrieval
+chromadb
+rank-bm25
+sentence-transformers
+jieba
+
+# LLM API
+openai
+dashscope
+
+# Embedding & NLP
+transformers
+torch
+
+# Web UI
+streamlit
+
+# Utils
+python-dotenv
