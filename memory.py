@@ -17,8 +17,9 @@ class AgentMemory:
     PRONOUNS = ["它", "这个", "那个", "该产品", "此产品"]
 
     def add_memory(self, role, content):
-        self.history.append({"role": role, "content": content})
-        self._extract_entity(content)
+        clean_content = str(content).encode('utf-8', errors='ignore').decode('utf-8')
+        self.history.append({"role": role, "content": clean_content})
+        self._extract_entity(clean_content)
         if len(self.history) > 20:
             self.history = self.history[-20:]
 
@@ -46,6 +47,11 @@ class AgentMemory:
                 return question.replace(pronoun, self.current_entity)
         self._extract_entity(question)
         return question
+
+    def clear_memory(self):
+        self.history = []
+        self.current_entity = None
+        self.entity_history = []
 
     def get_memory(self):
         return self.history

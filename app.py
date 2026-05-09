@@ -9,6 +9,7 @@ import sys
 from qa_workflow import build_qa_workflow, create_initial_state
 from pathlib import Path
 from dotenv import load_dotenv
+from memory import AgentMemory
 
 # ========== Streamlit兼容的UTF-8编码配置（无冲突） ==========
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -38,23 +39,6 @@ from utils import (
 
 
 # ===================== AI Agent核心功能（新增） =====================
-class AgentMemory:
-    def __init__(self):
-        self.history = []
-
-    def add_memory(self, role, content):
-        # 存储前强制编码（清洗乱码字符）
-        clean_content = str(content).encode('utf-8', errors='ignore').decode('utf-8')
-        self.history.append({"role": role, "content": clean_content})
-        if len(self.history) > 10:
-            self.history = self.history[-10:]
-
-    def get_memory(self):
-        return self.history
-
-    def clear_memory(self):
-        self.history = []
-
 
 def agent_tool_calling(question, param_db, llm_mode):
     from utils import match_product, normalize_question
@@ -228,8 +212,11 @@ if user_input:
         clean_input = str(user_input).encode('utf-8', errors='ignore').decode('utf-8')
         st.session_state.agent_memory.add_memory("user", clean_input)
 
+        # 代词消解：把"它"替换成具体产品名
+        resolved_input = st.session_state.agent_memory.resolve_pronouns(clean_input)
+
         # 使用LangGraph工作流
-        state = create_initial_state(clean_input)
+        state = create_initial_state(resolved_input)
         result = st.session_state.qa_app.invoke(state)
         answer = result["answer"]
 

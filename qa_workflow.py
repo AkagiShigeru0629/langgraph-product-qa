@@ -8,23 +8,26 @@ LangGraph 问答工作流
 
 使用方法：
     from qa_workflow import build_qa_workflow, create_initial_state
-    
+
     # 1. 构建工作流
     llm = OllamaLLM(model="qwen2.5")
     app = build_qa_workflow(llm)
-    
+
     # 2. 创建初始状态
     state = create_initial_state("星途Pro的续航是多少？")
-    
+
     # 3. 执行工作流
     result = app.invoke(state)
-    
+
     # 4. 获取结果
     print(result["answer"])
     print(result["confidence"])
 """
 import os
+
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HUB_OFFLINE'] = '1'
+os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
 import warnings
 import operator
@@ -42,6 +45,7 @@ from langgraph.graph.message import add_messages
 # ========== LLM 导入 ==========
 try:
     from langchain_ollama import OllamaLLM
+
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
@@ -58,6 +62,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 # 尝试导入 RAG 检索器
 try:
     from demo1.rag_retriever import RAGRetriever
+
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
@@ -66,12 +71,42 @@ except ImportError:
 # 尝试导入工具函数
 try:
     from utils import match_product, PARAM_KEYS, PRODUCT_KEYS, INTRO_KEYWORDS
+
     UTILS_AVAILABLE = True
 except ImportError:
     UTILS_AVAILABLE = False
     PARAM_KEYS = ["续航", "重量", "尺寸", "电池", "图传", "像素"]
     PRODUCT_KEYS = ["星途", "无人机", "网关", "净化器"]
     INTRO_KEYWORDS = ["介绍", "概述", "简介", "功能", "特点"]
+
+# ========== 全局统一参数关键词字典（所有函数共用，避免遗漏） ==========
+PARAM_SYNONYMS = {
+    "续航": ["续航", "续航时间", "飞行时间", "工作时间", "电池续航"],
+    "重量": ["重量", "起飞重量", "净重"],
+    "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
+    "电池": ["电池", "电池容量", "mAh"],
+    "图传": ["图传", "图传距离", "传输距离", "信号距离"],
+    "像素": ["像素", "分辨率", "摄像头", "相机", "CMOS", "传感器"],
+    "速度": ["速度", "飞行速度", "最大速度"],
+    "距离": ["距离", "图传距离", "飞行距离", "传输距离"],
+    "避障": ["避障", "避障系统", "视觉避障", "红外避障"],
+    "网络": ["网络", "5G", "4G", "Wi-Fi", "wifi", "通信", "连接", "蜂窝", "LTE"],
+    "协议": ["协议", "通信协议", "Modbus", "MQTT", "OPC", "HTTP"],
+    "噪音": ["噪音", "噪音水平", "分贝", "dB", "静音"],
+    "面积": ["面积", "适用面积", "覆盖面积"],
+    "温度": ["温度", "工作温度"],
+    "防水": ["防水", "防水等级", "IP"],
+    "功率": ["功率", "额定功率", "功耗"],
+    "滤芯": ["滤芯", "HEPA", "过滤网", "滤网"],
+    "接口": ["接口", "USB", "RS485", "以太网", "串口"],
+    "GPS": ["GPS", "定位", "RTK", "GNSS"],
+    "价格": ["价格", "售价", "多少钱"],
+    "CADR": ["CADR", "cadr", "洁净空气量"],
+    "CCM": ["CCM", "ccm", "累计净化量"],
+    "甲醛": ["甲醛", "HCHO", "除甲醛"],
+    "PM2.5": ["PM2.5", "pm2.5", "颗粒物"],
+    "适用面积": ["适用面积", "覆盖面积", "适用空间"],
+}
 
 
 # ============================================================================
@@ -81,25 +116,25 @@ except ImportError:
 class QAState(TypedDict):
     """
     问答工作流的统一状态
-    
+
     这个类定义了工作流中所有节点共享的数据结构。
     每个节点可以读取这些数据，也可以返回更新的数据。
     """
-    
+
     # ========== 输入 ==========
     question: str  # 用户原始问题
-    
+
     # ========== 中间状态（节点之间传递的数据）==========
     intent: str  # 识别的意图类型
     intent_confidence: float  # 意图置信度 (0-1)
     retrieved_context: str  # RAG 检索到的上下文
     relevance_score: float  # 相关性评分 (0-1)
-    
+
     # ========== 输出 ==========
     answer: str  # 最终回答
     confidence: str  # 回答置信度：高/中/低
     sources: List[str]  # 引用的知识来源
-    
+
     # ========== 对话历史（用于多轮对话扩展）==========
     messages: Annotated[list, add_messages]  # 对话消息历史
 
@@ -111,13 +146,13 @@ class QAState(TypedDict):
 def get_rag_retriever() -> Optional[RAGRetriever]:
     """
     获取 RAG 检索器实例
-    
+
     Returns:
         RAGRetriever 实例，如果不可用则返回 None
     """
     if not RAG_AVAILABLE:
         return None
-    
+
     try:
         rag = RAGRetriever()
         # 确保索引已构建
@@ -131,10 +166,10 @@ def get_rag_retriever() -> Optional[RAGRetriever]:
 def create_initial_state(question: str) -> Dict[str, Any]:
     """
     创建问答工作流的初始状态
-    
+
     Args:
         question: 用户问题
-        
+
     Returns:
         初始状态字典
     """
@@ -160,25 +195,25 @@ def create_initial_state(question: str) -> Dict[str, Any]:
 def intent_classifier(state: QAState) -> Dict[str, Any]:
     """
     意图分类节点
-    
+
     分析用户问题，判断用户想要做什么
-    
+
     支持的意图类型：
     - product_param_query: 产品参数查询
     - product_intro: 产品介绍查询
     - comparison: 产品对比
     - general_chat: 闲聊/问候
     - unclear: 无法识别
-    
+
     Args:
         state: 当前状态，包含 question
-        
+
     Returns:
         更新后的状态，包含 intent 和 intent_confidence
     """
     question = state["question"]
     question_lower = question.lower()
-    
+
     # 1. 检查是否闲聊/问候
     greeting_keywords = ["你好", "hello", "hi", "嗨", "在吗", "帮忙", "谢谢", "请问"]
     if any(kw in question_lower for kw in greeting_keywords) and len(question) < 10:
@@ -187,7 +222,7 @@ def intent_classifier(state: QAState) -> Dict[str, Any]:
             "intent_confidence": 0.95,
             "messages": [{"role": "user", "content": f"识别到闲聊意图: {question}"}]
         }
-    
+
     # 2. 检查是否为产品介绍类查询
     intro_keywords = ["介绍", "概述", "简介", "产品介绍", "详情", "功能", "特点", "亮点", "优势"]
     if any(kw in question_lower for kw in intro_keywords):
@@ -196,7 +231,7 @@ def intent_classifier(state: QAState) -> Dict[str, Any]:
             "intent_confidence": 0.85,
             "messages": [{"role": "user", "content": f"识别到产品介绍意图: {question}"}]
         }
-    
+
     # 3. 检查是否为产品对比
     comparison_keywords = ["对比", "比较", "区别", "哪个好", "差异", "对比", "差异"]
     if any(kw in question_lower for kw in comparison_keywords):
@@ -205,32 +240,31 @@ def intent_classifier(state: QAState) -> Dict[str, Any]:
             "intent_confidence": 0.80,
             "messages": [{"role": "user", "content": f"识别到产品对比意图: {question}"}]
         }
-    
+
     # 4. 检查是否为产品参数查询（最常见）
-    param_keywords = ["续航", "重量", "尺寸", "电池", "图传", "像素", "分辨率",
-                  "功率", "电压", "容量", "频率", "速度", "范围", "温度", "价格",
-                  "避障", "网络", "连接", "通信", "协议", "接口", "噪音", "面积"
-                  , "材质", "颜色", "型号", "相机", "摄像头", "分贝"]
+    # 从全局字典提取所有关键词（扁平化）
+    param_keywords = [kw for synonyms in PARAM_SYNONYMS.values() for kw in synonyms]
     product_keywords = ["星途", "无人机", "网关", "净化器", "智联云盒", "清氧"]
-    
+
     has_param = any(kw in question_lower for kw in param_keywords)
     has_product = any(kw in question_lower for kw in product_keywords)
-    
+
     if has_param and has_product:
         return {
             "intent": "product_param_query",
             "intent_confidence": 0.90,
             "messages": [{"role": "user", "content": f"识别到参数查询意图: {question}"}]
         }
-    
+
     if has_product:
         return {
             "intent": "product_intro",
             "intent_confidence": 0.70,
             "messages": [{"role": "user", "content": f"识别到产品相关意图: {question}"}]
         }
-    
+
     # 5. 无法识别
+
     return {
         "intent": "unclear",
         "intent_confidence": 0.50,
@@ -243,30 +277,30 @@ def intent_classifier(state: QAState) -> Dict[str, Any]:
 def rag_retriever_node(state: QAState) -> Dict[str, Any]:
     """
     RAG 检索节点
-    
+
     使用向量检索从知识库中获取与问题相关的内容
-    
+
     Args:
         state: 当前状态，包含 question
-        
+
     Returns:
         更新后的状态，包含 retrieved_context
     """
     question = state["question"]
     intent = state["intent"]
-    
+
     # 如果是闲聊，不需要 RAG 检索
     if intent == "general_chat":
         return {"retrieved_context": ""}
-    
+
     # 获取 RAG 检索器
     rag = get_rag_retriever()
-    
+
     if rag is None:
         # RAG 不可用时的降级处理
         print("⚠️ RAG 不可用，使用降级模式")
         return {"retrieved_context": ""}
-    
+
     try:
         # 执行检索
         context = rag.retrieve(question, top_k=10)
@@ -306,21 +340,7 @@ def relevance_evaluator(state: QAState) -> Dict[str, Any]:
     context_lower = context.lower()
 
     # ===== 1. 参数关键词匹配（核心改进） =====
-    param_synonyms = {
-        "续航": ["续航", "续航时间", "飞行时间", "工作时间", "电池续航"],
-        "重量": ["重量", "起飞重量", "净重"],
-        "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
-        "电池": ["电池", "电池容量", "mAh"],
-        "图传": ["图传", "图传距离", "传输距离", "信号距离"],
-        "像素": ["像素", "分辨率", "摄像头", "相机", "CMOS", "传感器"],
-        "速度": ["速度", "飞行速度", "最大速度"],
-        "距离": ["距离", "图传距离", "飞行距离", "传输距离"],
-        "避障": ["避障", "避障系统", "视觉避障", "红外避障"],
-        "网络": ["网络", "5G", "4G", "Wi-Fi", "wifi", "通信", "连接"],
-        "协议": ["协议", "通信协议", "Modbus", "MQTT", "OPC"],
-        "噪音": ["噪音", "噪音水平", "分贝", "dB", "静音"],
-        "面积": ["面积", "适用面积", "覆盖面积"],
-    }
+    param_synonyms = PARAM_SYNONYMS
 
     matched_params = []
 
@@ -341,13 +361,12 @@ def relevance_evaluator(state: QAState) -> Dict[str, Any]:
     else:
         param_match_score = 0.0
 
-
     if matched_params:
         print(f"📊 匹配到参数关键词: {matched_params}")
 
     # ===== 2. 通用关键词覆盖率 =====
     # 中文不用空格分词，改用2字滑窗
-    question_keywords = list(set(question_lower[i:i+2] for i in range(len(question_lower) - 1)))
+    question_keywords = list(set(question_lower[i:i + 2] for i in range(len(question_lower) - 1)))
     matched_keywords = sum(1 for kw in question_keywords if kw in context_lower)
     keyword_score = matched_keywords / max(len(question_keywords), 1)
 
@@ -362,18 +381,19 @@ def relevance_evaluator(state: QAState) -> Dict[str, Any]:
 
     return {"relevance_score": relevance_score}
 
+
 # -------------------- 节点4：回答生成 --------------------
 
 def answer_generator(state: QAState, llm=None) -> Dict[str, Any]:
     """
     回答生成节点
-    
+
     基于意图和上下文生成最终回答
-    
+
     Args:
         state: 当前状态
         llm: 语言模型实例
-        
+
     Returns:
         更新后的状态，包含 answer 和 confidence
     """
@@ -384,26 +404,7 @@ def answer_generator(state: QAState, llm=None) -> Dict[str, Any]:
     question_lower = question.lower()
 
     # 参数关键词提取
-    all_param_keywords = {
-        "续航": ["续航", "续航时间", "飞行时间", "工作时间"],
-        "重量": ["重量", "起飞重量", "净重"],
-        "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
-        "电池": ["电池", "电池容量", "mAh"],
-        "图传": ["图传", "图传距离", "传输距离"],
-        "相机": ["相机", "摄像头", "像素", "CMOS", "传感器"],
-        "速度": ["速度", "飞行速度", "最大速度"],
-        "距离": ["距离", "飞行距离", "图传距离"],
-        "避障": ["避障", "避障系统", "视觉避障", "红外避障"],
-        "温度": ["温度", "工作温度"],
-        "防水": ["防水", "防水等级", "IP"],
-        "网络": ["网络", "5G", "4G", "Wi-Fi", "蜂窝", "LTE"],
-        "协议": ["协议", "Modbus", "MQTT", "OPC", "HTTP"],
-        "噪音": ["噪音", "噪音水平", "分贝", "dB", "静音"],
-        "面积": ["面积", "适用面积", "覆盖面积"],
-        "功率": ["功率", "额定功率", "功耗"],
-        "滤芯": ["滤芯", "HEPA", "过滤网", "滤网"],
-        "接口": ["接口", "USB", "RS485", "以太网", "串口"],
-    }
+    all_param_keywords = PARAM_SYNONYMS
     target_params = []
     for param, keywords in all_param_keywords.items():
         if any(kw in question_lower for kw in keywords):
@@ -531,13 +532,13 @@ def answer_generator(state: QAState, llm=None) -> Dict[str, Any]:
     for tag in ['[产品说明-无人机.txt]', '[产品说明-智能网关.txt]', '[产品说明-空气净化器.txt]', '---']:
         answer = answer.replace(tag, '')
     answer = answer.strip()
-    
+
     # 判断置信度
     confidence = "高" if relevance >= 0.7 else "中"
-    
+
     # 提取来源
     sources = extract_sources(context)
-    
+
     return {
         "answer": answer,
         "confidence": confidence,
@@ -561,7 +562,8 @@ def fallback_handler(state: QAState) -> Dict[str, Any]:
     question_lower = question.lower()
 
     # ===== 0. 无关产品检查 =====
-    outside_products = ["特斯拉", "苹果", "华为", "小米", "手机", "汽车", "笔记本", "电脑", "平板", "冰箱", "空调", "洗衣机", "电视"]
+    outside_products = ["特斯拉", "苹果", "华为", "小米", "手机", "汽车", "笔记本", "电脑", "平板", "冰箱", "空调",
+                        "洗衣机", "电视"]
     known_products = ["无人机", "星途", "网关", "智联", "净化器", "清氧"]
     mentions_outside = any(kw in question_lower for kw in outside_products)
     mentions_known = any(kw in question_lower for kw in known_products)
@@ -574,20 +576,7 @@ def fallback_handler(state: QAState) -> Dict[str, Any]:
         }
 
     # ===== 1. 提取问题中的参数关键词 =====
-    param_keywords = {
-        "续航": ["续航", "续航时间", "飞行时间", "工作时间"],
-        "重量": ["重量", "起飞重量", "净重"],
-        "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
-        "电池": ["电池", "电池容量", "mAh"],
-        "图传": ["图传", "图传距离", "传输距离"],
-        "相机": ["像素", "分辨率", "摄像头", "相机", "CMOS", "传感器"],
-        "速度": ["速度", "飞行速度", "最大速度"],
-        "距离": ["距离", "飞行距离", "图传距离"],
-        "避障": ["避障", "避障系统", "视觉避障", "红外避障"],
-        "网络": ["网络", "5G", "4G", "Wi-Fi", "通信", "连接", "蜂窝"],
-        "协议": ["协议", "通信协议", "Modbus", "MQTT", "OPC"],
-        "噪音": ["噪音", "噪音水平", "分贝", "dB", "静音"],
-    }
+    param_keywords = PARAM_SYNONYMS
 
     target_params = []
     for param, keywords in param_keywords.items():
@@ -726,28 +715,7 @@ def filter_relevant_context(question: str, context: str) -> str:
     question_lower = question.lower()
 
     # 参数关键词映射
-    param_keywords = {
-        "续航": ["续航", "续航时间", "飞行时间", "工作时间"],
-        "重量": ["重量", "起飞重量", "净重"],
-        "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
-        "电池": ["电池", "电池容量", "mAh"],
-        "图传": ["图传", "图传距离", "传输距离"],
-        "相机": ["相机", "摄像头", "像素", "CMOS", "传感器"],
-        "速度": ["速度", "飞行速度", "最大速度"],
-        "距离": ["距离", "飞行距离", "图传距离"],
-        "避障": ["避障", "避障系统", "视觉避障", "红外避障"],
-        "温度": ["温度", "工作温度"],
-        "防水": ["防水", "防水等级", "IP"],
-        "网络": ["网络", "5G", "4G", "Wi-Fi", "蜂窝", "LTE"],
-        "协议": ["协议", "Modbus", "MQTT", "OPC", "HTTP"],
-        "噪音": ["噪音", "噪音水平", "分贝", "dB", "静音"],
-        "面积": ["面积", "适用面积", "覆盖面积"],
-        "价格": ["价格", "售价", "多少钱"],
-        "功率": ["功率", "额定功率", "功耗"],
-        "滤芯": ["滤芯", "HEPA", "过滤网", "滤网"],
-        "接口": ["接口", "USB", "RS485", "以太网", "串口"],
-        "GPS": ["GPS", "定位", "RTK", "GNSS"],
-    }
+    param_keywords = PARAM_SYNONYMS
 
     # 文档标记 → 产品名映射
     doc_to_product = {
@@ -847,33 +815,15 @@ def filter_relevant_context(question: str, context: str) -> str:
                 if any(kw in line for kw in keywords):
                     is_key_line = False
 
-                    # 方式1: 关键词在冒号前（如"图传距离：15km"）
-                    colon_pos = line.find('：')
-                    if colon_pos == -1:
-                        colon_pos = line.find(':')
-                    if colon_pos > 0:
-                        before_colon = line[:colon_pos]
-                        if any(kw in before_colon for kw in keywords):
-                            is_key_line = True
-
-                    # 方式2: 关键词后面紧跟数值（如"最大飞行速度 23m/s"）
-                    if not is_key_line:
-                        for kw in keywords:
-                            kw_pos = line.find(kw)
-                            if kw_pos >= 0:
-                                after_kw = line[kw_pos + len(kw):]
-                                if re.match(r'[\s：:]*\d+', after_kw):
-                                    is_key_line = True
-                                    break
-
-                    if is_key_line:
-                        # 精准行可能包含多个参数，只提取相关子句
-                        clauses = re.split(r'[，,；;]', line)
-                        relevant_clauses = [c.strip() for c in clauses if any(kw in c for kw in keywords)]
-                        if relevant_clauses:
-                            key_lines.append('，'.join(relevant_clauses))
-                        else:
-                            key_lines.append(line)
+                if any(kw in line for kw in keywords):
+                    # 只要行里包含目标参数关键词，就算相关行
+                    # 先尝试只提取相关子句（用逗号/分号拆分）
+                    clauses = re.split(r'[，,；;]', line)
+                    relevant_clauses = [c.strip() for c in clauses if any(kw in c for kw in keywords)]
+                    if relevant_clauses:
+                        key_lines.append('，'.join(relevant_clauses))
+                    else:
+                        key_lines.append(line)
                     break
 
     # 7. 组装结果
@@ -957,7 +907,7 @@ def generate_fallback_answer(question: str, context: str, llm=None) -> Dict[str,
             answer = generate_simple_answer(question, context)
     else:
         answer = generate_simple_answer(question, context)
-    
+
     return {
         "answer": f"⚠️ 检索结果相关性较低，以下仅供参考：\n\n{answer}",
         "confidence": "中",
@@ -965,18 +915,17 @@ def generate_fallback_answer(question: str, context: str, llm=None) -> Dict[str,
         "messages": [{"role": "assistant", "content": "低相关混合回答"}]
     }
 
-
 def extract_sources(context: str) -> List[str]:
     """
     从上下文中提取来源信息
     """
     sources = []
     lines = context.split('\n')
-    
+
     for line in lines:
         if '【' in line and '】' in line:
             sources.append(line.strip())
-    
+
     return sources[:3]  # 最多返回 3 个来源
 
 # ============================================================================
@@ -986,16 +935,16 @@ def extract_sources(context: str) -> List[str]:
 def route_after_intent(state: QAState) -> str:
     """
     意图识别后的路由决策
-    
+
     Returns:
         下一个节点名称
     """
     intent = state["intent"]
-    
+
     # 闲聊直接生成回答
     if intent == "general_chat":
         return "answer_generator"
-    
+
     # 其他意图都需要 RAG 检索
     return "rag_retriever"
 
@@ -1003,16 +952,16 @@ def route_after_intent(state: QAState) -> str:
 def route_after_relevance(state: QAState) -> str:
     """
     相关性评估后的路由决策
-    
+
     Returns:
         下一个节点名称
     """
     relevance = state["relevance_score"]
-    
+
     # 高/中相关，直接生成回答
     if relevance >= 0.4:
         return "answer_generator"
-    
+
     # 低相关，降级处理
     return "fallback_handler"
 
@@ -1023,17 +972,17 @@ def route_after_relevance(state: QAState) -> str:
 def build_qa_workflow(llm=None) -> StateGraph:
     # 1. 创建状态图
     workflow = StateGraph(QAState)
-    
+
     # 2. 添加节点
     workflow.add_node("intent_classifier", intent_classifier)
     workflow.add_node("rag_retriever", rag_retriever_node)
     workflow.add_node("relevance_evaluator", relevance_evaluator)
     workflow.add_node("answer_generator", answer_generator)
     workflow.add_node("fallback_handler", fallback_handler)
-    
+
     # 3. 设置入口点
     workflow.set_entry_point("intent_classifier")
-    
+
     # 4. 添加边
     # 意图识别 → 根据意图路由
     workflow.add_conditional_edges(
@@ -1044,55 +993,56 @@ def build_qa_workflow(llm=None) -> StateGraph:
             "rag_retriever": "rag_retriever"  # 其他意图先检索
         }
     )
-    
+
     # RAG 检索 → 相关性评估
     workflow.add_edge("rag_retriever", "relevance_evaluator")
-    
+
     # 相关性评估 → 根据相关性路由
     workflow.add_conditional_edges(
         "relevance_evaluator",
         route_after_relevance,
         {
             "answer_generator": "answer_generator",  # 高/中相关
-            "fallback_handler": "fallback_handler"   # 低相关
+            "fallback_handler": "fallback_handler"  # 低相关
         }
     )
-    
+
     # 回答生成 / 降级处理 → 结束
     workflow.add_edge("answer_generator", END)
     workflow.add_edge("fallback_handler", END)
-    
+
     # 5. 编译工作流
     return workflow.compile()
+
 # ============================================================================
 # 第七部分：便捷调用接口
 # ============================================================================
 def ask_question(question: str, llm=None, verbose: bool = True) -> Dict[str, Any]:
     """
     便捷的问答接口
-    
+
     Args:
         question: 用户问题
         llm: 语言模型（可选）
         verbose: 是否打印详细信息
-        
+
     Returns:
         包含 answer, confidence, sources 的字典
     """
     # 构建工作流
     app = build_qa_workflow(llm)
-    
+
     # 创建初始状态
     initial_state = create_initial_state(question)
-    
+
     if verbose:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"📝 问题: {question}")
-        print(f"{'='*50}")
-    
+        print(f"{'=' * 50}")
+
     # 执行工作流
     result = app.invoke(initial_state)
-    
+
     if verbose:
         print(f"\n📊 执行结果:")
         print(f"   意图: {result['intent']} (置信度: {result['intent_confidence']:.2f})")
@@ -1100,10 +1050,10 @@ def ask_question(question: str, llm=None, verbose: bool = True) -> Dict[str, Any
         print(f"   置信度: {result['confidence']}")
         print(f"\n💬 回答:")
         print(result['answer'])
-        
+
         if result['sources']:
             print(f"\n📚 来源: {result['sources']}")
-    
+
     return {
         "answer": result['answer'],
         "confidence": result['confidence'],
@@ -1117,8 +1067,8 @@ def ask_question(question: str, llm=None, verbose: bool = True) -> Dict[str, Any
 
 if __name__ == "__main__":
     print("🧪 LangGraph 问答工作流测试")
-    print("="*50)
-    
+    print("=" * 50)
+
     # 测试问题列表
     test_questions = [
         "星途Pro的续航是多少？",
@@ -1127,8 +1077,8 @@ if __name__ == "__main__":
         "网关有哪些参数？",
         "这个无人机能不能飞月亮？"
     ]
-    
+
     # 执行测试
     for q in test_questions:
         ask_question(q, llm=None, verbose=True)
-        print("\n" + "-"*50)
+        print("\n" + "-" * 50)
