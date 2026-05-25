@@ -10,7 +10,7 @@ LangGraph 问答工作流
     from qa_workflow import build_qa_workflow, create_initial_state
 
     # 1. 构建工作流
-    llm = OllamaLLM(model="qwen2.5")
+    llm = OllamaLLM(model="qwen:7b")
     app = build_qa_workflow(llm)
 
     # 2. 创建初始状态
@@ -81,7 +81,7 @@ except ImportError:
 
 # ========== 全局统一参数关键词字典（所有函数共用，避免遗漏） ==========
 PARAM_SYNONYMS = {
-    "续航": ["续航", "续航时间", "飞行时间", "工作时间", "电池续航"],
+    "续航": ["续航", "续航时间", "飞行时间", "工作时间", "电池续航", "能飞多久", "能飞多长时间", "飞多久"],
     "重量": ["重量", "起飞重量", "净重"],
     "尺寸": ["尺寸", "展开尺寸", "折叠尺寸", "大小"],
     "电池": ["电池", "电池容量", "mAh"],
@@ -511,10 +511,12 @@ def answer_generator(state: QAState, llm=None) -> Dict[str, Any]:
     1. 直接回答用户问题，不要输出无关信息
     2. 如果问题问的是具体参数，只回答该参数值
     3. 如果知识库中没有相关信息，请明确告知
-
+    4. 如果多个检索结果包含相同信息，只保留最完整的一条，不要重复罗列
+    
     【回答】"""
 
     # 如果有 LLM，使用 LLM 生成
+    print(f"🔍 DEBUG - llm是否为None: {llm is None}, target_params: {target_params}, mentions_known: {mentions_known}")
     if llm is not None:
         try:
             answer = llm.invoke(prompt)
@@ -854,6 +856,25 @@ def generate_simple_answer(question: str, context: str) -> str:
         # 清理文档标记
         for tag in ['[产品说明-无人机.txt]', '[产品说明-智能网关.txt]', '[产品说明-空气净化器.txt]', '---']:
             filtered = filtered.replace(tag, '')
+        # 去重：相同参数值只保留最完整的一条
+        seen_values = {}
+        deduped_lines = []
+        for line in filtered.strip().split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # 提取冒号后的值作为去重key
+            if '：' in line:
+                value = line.split('：', 1)[1].strip()
+                # 只保留值最完整的那条
+                if value not in seen_values or len(line) > len(seen_values[value]):
+                    if value in seen_values:
+                        deduped_lines.remove(seen_values[value])
+                    seen_values[value] = line
+                    deduped_lines.append(line)
+                continue
+            deduped_lines.append(line)
+        filtered = '\n'.join(deduped_lines)
         return f"根据知识库信息：{filtered.strip()}"
 
     # 过滤没匹配到，回退到关键词匹配
@@ -977,8 +998,8 @@ def build_qa_workflow(llm=None) -> StateGraph:
     workflow.add_node("intent_classifier", intent_classifier)
     workflow.add_node("rag_retriever", rag_retriever_node)
     workflow.add_node("relevance_evaluator", relevance_evaluator)
-    workflow.add_node("answer_generator", answer_generator)
-    workflow.add_node("fallback_handler", fallback_handler)
+    workflow.add_node("answer_generator", lambda state: answer_generator(state, llm=llm))
+    workflow.add_node("fallback_handler", lambda state: fallback_handler(state, llm=llm))
 
     # 3. 设置入口点
     workflow.set_entry_point("intent_classifier")

@@ -10,6 +10,7 @@ from qa_workflow import build_qa_workflow, create_initial_state
 from pathlib import Path
 from dotenv import load_dotenv
 from memory import AgentMemory
+from langchain_ollama import OllamaLLM
 
 # ========== Streamlit兼容的UTF-8编码配置（无冲突） ==========
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -145,7 +146,7 @@ with st.sidebar:
     llm_mode = "local"
     # 当前配置
     st.markdown("### ⚙️ 当前配置")
-    st.info("本地模式 · Ollama qwen2.5")
+    st.info("本地模式 · Ollama qwen:7b")
 
     st.markdown("---")
 
@@ -187,7 +188,9 @@ if "param_db" not in st.session_state:
         st.session_state.full_doc = load_full_doc_content()
 
 if "qa_app" not in st.session_state:
-    st.session_state.qa_app = build_qa_workflow()
+    llm = OllamaLLM(model="qwen:7b")
+    st.session_state.qa_app = build_qa_workflow(llm=llm)
+
 
 
 # 初始化AI Agent
